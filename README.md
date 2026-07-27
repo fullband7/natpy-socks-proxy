@@ -36,7 +36,7 @@ cd C:\Path\To\Your\CloakPY\Folder
 ```
 and run the CloakPY with this command 
 ```
-python CloakPY-win.py --host 0.0.0.0 --user yourusername --password yourpassword
+python cloakpy-win.py --host 0.0.0.0 --user yourusername --password yourpassword
 ```
 
 --host 0.0.0.0 → Listen on all interfaces (Not Secure)
@@ -58,7 +58,7 @@ echo    CloakPY SOCKS5 Proxy
 echo ========================
 echo.
 
-python CloakPY-win.py --host 0.0.0.0 --user username --password password
+python cloakpy-win.py --host 0.0.0.0 --user username --password password
 
 echo.
 echo Proxy has stopped or was closed.
@@ -95,7 +95,7 @@ cd /storage/emulated/0/server
 Now you can run the server with this command :
 
 ```
-python CloakPY-android.py --host 0.0.0.0 --port 9898 --user username --password password
+python cloakpy-android.py --host 0.0.0.0 --port 9898 --user username --password password
 ```
 
 > [!WARNING]
