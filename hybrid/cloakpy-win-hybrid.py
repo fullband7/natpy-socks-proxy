@@ -590,6 +590,22 @@ class Socks5Proxy(_RelayMixin):
 
 
 def detect_listen_address() -> str:
+    try:
+        import psutil
+        stats = psutil.net_if_stats()
+        for iface, addrs in psutil.net_if_addrs().items():
+            if iface not in stats or not stats[iface].isup:
+                continue
+            for addr in addrs:
+                if addr.family == socket.AF_INET:
+                    ip = addr.address
+                    if ip.startswith(("192.168.", "10.")):
+                        return ip
+    except ImportError:
+        pass
+    except Exception:
+        pass
+
     _IP_RE = re.compile(r"(\d+\.\d+\.\d+\.\d+)")
     try:
         result = subprocess.run(
