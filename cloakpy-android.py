@@ -12,7 +12,6 @@ TCP_CHUNK_SIZE = 32768
 _DNS_TTL = 300
 _DNS_NEG_TTL = 30
 _DNS_TIMEOUT = 5.0
-_CLIENT_REBIND_GRACE = 4.0
 _SOCK_BUF = 131072
 _DEFAULT_WORKERS = 64
 
@@ -85,7 +84,6 @@ class UdpRelayProtocol(asyncio.DatagramProtocol):
         self.proxy = proxy
         self.transport = None
         self.client_addr = None
-        self.client_last_seen = 0.0
         self.target_addrs = set()
 
     def connection_made(self, transport):
@@ -93,12 +91,7 @@ class UdpRelayProtocol(asyncio.DatagramProtocol):
 
     def datagram_received(self, data, addr):
         if addr[0] == self.client_ip:
-            now = time.monotonic()
-            if self.client_addr is not None and addr != self.client_addr:
-                if now - self.client_last_seen < _CLIENT_REBIND_GRACE:
-                    return
             self.client_addr = addr
-            self.client_last_seen = now
             self._handle_client_to_target(data)
         elif self.client_addr and addr in self.target_addrs:
             self._handle_target_to_client(data, addr)
