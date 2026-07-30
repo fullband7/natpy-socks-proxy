@@ -22,7 +22,6 @@ _DNS_TTL        = 300
 _DNS_NEG_TTL    = 30
 _BACKLOG        = 64
 _HTTP_HDR_LIMIT = 8192
-_CLIENT_REBIND_GRACE = 4.0
 
 
 def _is_blocked_destination(ip: str) -> bool:
@@ -410,7 +409,6 @@ class Socks5Proxy(_RelayMixin):
                 return
 
             client_addr: Optional[Tuple[str, int]] = None
-            client_last_seen = 0.0
             target_addrs: set = set()
             deadline = time.monotonic() + _UDP_IDLE
 
@@ -439,19 +437,10 @@ class Socks5Proxy(_RelayMixin):
                     deadline = time.monotonic() + _UDP_IDLE
 
                     if addr[0] == client_ip:
-                        now = time.monotonic()
-                        if (
-                            client_addr is not None
-                            and addr != client_addr
-                            and now - client_last_seen < _CLIENT_REBIND_GRACE
-                        ):
-                            continue
-
                         parsed = self._parse_udp_header(data)
                         if parsed:
                             payload, dest = parsed
                             client_addr = addr
-                            client_last_seen = now
                             target_addrs.add(dest)
                             try:
                                 relay_sock.sendto(payload, dest)
