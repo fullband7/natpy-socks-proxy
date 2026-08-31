@@ -6,8 +6,8 @@ import threading
 from collections import deque
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, QRectF
-from PySide6.QtGui import QPainter, QPen, QColor, QPainterPath, QFont
+from PySide6.QtCore import Qt, QTimer, QRectF, QEvent
+from PySide6.QtGui import QPainter, QPen, QColor, QPainterPath, QFont, QIcon, QPixmap, QAction
 from PySide6.QtWidgets import (
     QApplication,
     QWidget,
@@ -19,6 +19,10 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QFrame,
     QMessageBox,
+    QStackedWidget,
+    QButtonGroup,
+    QSystemTrayIcon,
+    QMenu,
 )
 
 from cloakpy import VPNSocks5Proxy
@@ -34,7 +38,9 @@ Disconnect       = "#ff8000"
 TEXT_PRIMARY   = "#EDEFF4"
 TEXT_SECONDARY = "#8891A6"
 DOWN_COLOR     = "#22C55E"
-UP_COLOR       = "#A855F7"
+UP_COLOR       = "#008c69"
+TAB_ACTIVE     = "#2F80ED"
+TITLE_BAR      = "#0A0E16"
 
 STYLESHEET = f"""
 QWidget {{
@@ -65,6 +71,23 @@ QLabel[role="fieldLabel"] {{
 QCheckBox {{
     color: {TEXT_SECONDARY};
     font-size: 12px;
+}}
+QPushButton#tabButton {{
+    background-color: transparent;
+    color: {TEXT_SECONDARY};
+    border: none;
+    border-radius: 10px;
+    padding: 8px 16px;
+    font-size: 13px;
+    font-weight: 700;
+}}
+QPushButton#tabButton:hover {{
+    background-color: {TAB_ACTIVE};
+    color: #FFFFFF;
+}}
+QPushButton#tabButton:checked {{
+    background-color: {TAB_ACTIVE};
+    color: #FFFFFF;
 }}
 """
 
@@ -199,6 +222,41 @@ class ConnectionBadge(QFrame):
         start_angle = int(-self._spin_angle * 16)
         painter.drawArc(rect, start_angle, span_angle)
         painter.end()
+
+
+def _apply_title_bar_color(hwnd, color_hex: str) -> None:
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        color = QColor(color_hex)
+        colorref = color.red() | (color.green() << 8) | (color.blue() << 16)
+        DWMWA_CAPTION_COLOR = 35
+        ctypes.windll.dwmapi.DwmSetWindowAttribute(
+            ctypes.c_void_p(int(hwnd)),
+            ctypes.c_int(DWMWA_CAPTION_COLOR),
+            ctypes.byref(ctypes.c_int(colorref)),
+            ctypes.sizeof(ctypes.c_int),
+        )
+    except Exception:
+        pass
+
+
+def _make_tray_icon(color_hex: str) -> QIcon:
+    size = 64
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QColor(color_hex))
+    painter.drawEllipse(2, 2, size - 4, size - 4)
+    font = QFont("Segoe UI", 30, QFont.Weight.Bold)
+    painter.setFont(font)
+    painter.setPen(QColor("#FFFFFF"))
+    painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "C")
+    painter.end()
+    return QIcon(pixmap)
 
 
 def _format_rate(bytes_per_sec: float) -> str:
@@ -343,7 +401,9 @@ class ProxyPanel(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("CloakPY Socks Server")
+        self.setWindowIcon(_make_tray_icon(UP_COLOR))
         self.setFixedWidth(380)
+        self._title_bar_colored = False
 
         self._config = ConfigStore()
         self._proxy: VPNSocks5Proxy | None = None
@@ -358,6 +418,7 @@ class ProxyPanel(QWidget):
 
         self._build_ui()
         self._load_config()
+        self._build_tray()
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
@@ -372,28 +433,87 @@ class ProxyPanel(QWidget):
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
-        root.setContentsMargins(28, 32, 28, 28)
-        root.setSpacing(6)
+        root.setContentsMargins(28, 24, 28, 28)
+        root.setSpacing(10)
+
+        tab_row = QHBoxLayout()
+        tab_row.setSpacing(6)
+        tab_row.setAlignment(Qt.AlignLeft)
+
+        self._dashboard_tab = QPushButton("Dashboard")
+        self._dashboard_tab.setObjectName("tabButton")
+        self._dashboard_tab.setCheckable(True)
+        self._dashboard_tab.setChecked(True)
+        self._dashboard_tab.setCursor(Qt.PointingHandCursor)
+        self._dashboard_tab.setFocusPolicy(Qt.NoFocus)
+        self._dashboard_tab.clicked.connect(lambda: self._switch_tab(0))
+
+        self._settings_tab = QPushButton("Settings")
+        self._settings_tab.setObjectName("tabButton")
+        self._settings_tab.setCheckable(True)
+        self._settings_tab.setCursor(Qt.PointingHandCursor)
+        self._settings_tab.setFocusPolicy(Qt.NoFocus)
+        self._settings_tab.clicked.connect(lambda: self._switch_tab(1))
+
+        self._tab_group = QButtonGroup(self)
+        self._tab_group.setExclusive(True)
+        self._tab_group.addButton(self._dashboard_tab)
+        self._tab_group.addButton(self._settings_tab)
+
+        tab_row.addWidget(self._dashboard_tab)
+        tab_row.addWidget(self._settings_tab)
+        tab_row.addStretch(1)
+        root.addLayout(tab_row)
+
+        self._stack = QStackedWidget()
+        root.addWidget(self._stack)
+        self._stack.addWidget(self._build_dashboard_page())
+        self._stack.addWidget(self._build_settings_page())
+
+    def _switch_tab(self, index: int) -> None:
+        self._stack.setCurrentIndex(index)
+
+    def _build_dashboard_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 8, 0, 0)
+        layout.setSpacing(6)
 
         badge_row = QHBoxLayout()
         badge_row.setAlignment(Qt.AlignCenter)
         self._badge = ConnectionBadge()
         badge_row.addWidget(self._badge)
-        root.addLayout(badge_row)
+        layout.addLayout(badge_row)
 
-        root.addSpacing(18)
+        layout.addSpacing(18)
 
         self._graph = BandwidthGraph()
-        root.addWidget(self._graph)
+        layout.addWidget(self._graph)
 
-        root.addSpacing(20)
+        layout.addSpacing(20)
 
-        self._host_edit = self._add_field(root, "IP Address")
+        self._toggle_btn = QPushButton("Start Proxy")
+        self._toggle_btn.setFixedHeight(48)
+        self._toggle_btn.setFocusPolicy(Qt.NoFocus)
+        self._toggle_btn.setCursor(Qt.PointingHandCursor)
+        self._toggle_btn.clicked.connect(self._on_toggle)
+        layout.addWidget(self._toggle_btn)
+        self._style_toggle_button(running=False)
+
+        return page
+
+    def _build_settings_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 8, 0, 0)
+        layout.setSpacing(0)
+
+        self._host_edit = self._add_field(layout, "IP Address")
         self._host_edit.editingFinished.connect(self._ensure_host_default)
-        self._port_edit = self._add_field(root, "Port")
+        self._port_edit = self._add_field(layout, "Port")
         self._port_edit.setText("9898")
-        self._user_edit = self._add_field(root, "Username (optional)")
-        self._pass_edit = self._add_field(root, "Password (optional)")
+        self._user_edit = self._add_field(layout, "Username (optional)")
+        self._pass_edit = self._add_field(layout, "Password (optional)")
         self._pass_edit.setEchoMode(QLineEdit.Password)
 
         show_pass = QCheckBox("Show password")
@@ -402,17 +522,46 @@ class ProxyPanel(QWidget):
                 QLineEdit.Normal if checked else QLineEdit.Password
             )
         )
-        root.addWidget(show_pass)
+        layout.addWidget(show_pass)
 
-        root.addSpacing(14)
+        layout.addSpacing(14)
 
-        self._toggle_btn = QPushButton("Start Proxy")
-        self._toggle_btn.setFixedHeight(48)
-        self._toggle_btn.setFocusPolicy(Qt.NoFocus)
-        self._toggle_btn.setCursor(Qt.PointingHandCursor)
-        self._toggle_btn.clicked.connect(self._on_toggle)
-        root.addWidget(self._toggle_btn)
-        self._style_toggle_button(running=False)
+        self._save_btn = QPushButton("Save")
+        self._save_btn.setFixedHeight(44)
+        self._save_btn.setFocusPolicy(Qt.NoFocus)
+        self._save_btn.setCursor(Qt.PointingHandCursor)
+        self._save_btn.clicked.connect(self._on_save_settings)
+        layout.addWidget(self._save_btn)
+        self._style_save_button()
+
+        return page
+
+    def _style_save_button(self) -> None:
+        self._save_btn.setStyleSheet(
+            f"""
+            QPushButton {{
+                background-color: {ACCENT};
+                color: #eeeeee;
+                border: none;
+                border-radius: 14px;
+                font-size: 14px;
+                font-weight: 700;
+            }}
+            QPushButton:hover {{
+                background-color: {Initiate};
+            }}
+            """
+        )
+
+    def _on_save_settings(self) -> None:
+        self._config.save(
+            self._host_edit.text().strip(),
+            self._port_edit.text().strip(),
+            self._user_edit.text().strip(),
+            self._pass_edit.text(),
+        )
+        self._save_btn.setText("Saved")
+        QTimer.singleShot(1200, lambda: self._save_btn.setText("Save"))
 
     def _add_field(self, layout: QVBoxLayout, label_text: str) -> QLineEdit:
         label = QLabel(label_text)
@@ -452,6 +601,55 @@ class ProxyPanel(QWidget):
     def _ensure_host_default(self) -> None:
         if not self._host_edit.text().strip():
             self._host_edit.setText(self._auto_host)
+
+    def _build_tray(self) -> None:
+        self._tray_icon_running = _make_tray_icon(Initiate)
+        self._tray_icon_idle = _make_tray_icon(IDLE)
+
+        self._tray = QSystemTrayIcon(self._tray_icon_idle, self)
+        self._tray.setToolTip("CloakPY Socks Server")
+
+        tray_menu = QMenu()
+        show_action = QAction("Show", self)
+        show_action.triggered.connect(self._restore_from_tray)
+        quit_action = QAction("Quit", self)
+        quit_action.triggered.connect(self._quit_app)
+        tray_menu.addAction(show_action)
+        tray_menu.addSeparator()
+        tray_menu.addAction(quit_action)
+
+        self._tray.setContextMenu(tray_menu)
+        self._tray.activated.connect(self._on_tray_activated)
+        self._tray.show()
+
+    def _set_tray_running(self, running: bool) -> None:
+        self._tray.setIcon(self._tray_icon_running if running else self._tray_icon_idle)
+
+    def _on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
+        if reason in (
+            QSystemTrayIcon.ActivationReason.Trigger,
+            QSystemTrayIcon.ActivationReason.DoubleClick,
+        ):
+            self._restore_from_tray()
+
+    def _restore_from_tray(self) -> None:
+        self.showNormal()
+        self.activateWindow()
+        self.raise_()
+
+    def _quit_app(self) -> None:
+        self.close()
+
+    def changeEvent(self, event) -> None:
+        if event.type() == QEvent.Type.WindowStateChange and self.isMinimized():
+            QTimer.singleShot(0, self.hide)
+        super().changeEvent(event)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if not self._title_bar_colored:
+            self._title_bar_colored = True
+            _apply_title_bar_color(self.winId(), TITLE_BAR)
 
     def _on_toggle(self) -> None:
         if self._proxy is not None:
@@ -494,6 +692,7 @@ class ProxyPanel(QWidget):
         self._style_toggle_button(running=True)
         self._badge.set_running(True)
         self._graph.set_active(True)
+        self._set_tray_running(True)
 
     def _stop_proxy(self) -> None:
         if self._proxy is None:
@@ -537,10 +736,12 @@ class ProxyPanel(QWidget):
             self._badge.set_count(0)
             self._graph.set_active(False)
             self._graph.push_sample(0.0, 0.0)
+            self._set_tray_running(False)
 
     def closeEvent(self, event) -> None:
         if self._proxy is not None:
             self._proxy.stop()
+        self._tray.hide()
         event.accept()
 
 
